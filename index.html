@@ -108,7 +108,8 @@ body{font-family:'Inter',system-ui,sans-serif;background:#f1f5f9;color:#1e293b;m
 
 <script>
 var CONFIG = {
-  apiToken: 'eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjQ1NjA4NTcwMSwiYWFpIjoxMSwidWlkIjo2OTYyOTM1MSwiaWFkIjoiMjAyNS0wMS0xMFQwNjoyMTozMi4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6NjQzMTgxMCwicmduIjoidXNlMSJ9.CaVqnG51LtzKP4MTxXCflpqaZA64n0TvS6DzmK-7R84',
+  apiToken: 'eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjQ1NjA4NTcwMSwiYWFpIjoxMSwidWlkIjo2OTYyOTM1MSwiaWFkIjoiMjAyNS0wMS0xMFQwNjoyMTozMi4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6NjQzMTgxMCwicmduIjoidXNlMSJ9.CaVqnG51LtzKP4MTxXCflpqaZA64n0TvS6DzmK-7R84
+',
   boardId:  '18391057818'
 };
 </script>
@@ -306,23 +307,45 @@ function getTimeTrackedHours(colId) {
 }
 
 // ── Render ─────────────────────────────────────────────────
-// ── Get item ID from URL (monday passes ?itemId=X when embedded in item view) ──
+// ── Get item ID from URL or monday.com postMessage context ──
 function getItemIdFromUrl() {
   var params = new URLSearchParams(window.location.search);
   console.log('[URL params]', Array.from(params.entries()));
-  // monday uses various param names depending on embed type
   var id = params.get('itemId') || params.get('item_id') || params.get('pulseId') || params.get('pulse_id') || '';
-  // If the URL contains an unresolved placeholder like {pulse.id}, ignore it
-  if (id && (id.indexOf('{') !== -1 || id.indexOf('}') !== -1)) {
-    console.warn('[URL params] placeholder not substituted:', id);
-    return '';
-  }
-  // Must be numeric
-  if (id && !/^\d+$/.test(id)) {
-    console.warn('[URL params] non-numeric id:', id);
-    return '';
-  }
+  if (id && (id.indexOf('{') !== -1 || id.indexOf('}') !== -1)) return '';
+  if (id && !/^\d+$/.test(id)) return '';
   return id;
+}
+
+// monday.com sends context to embedded iframes via postMessage
+function getItemIdFromMonday() {
+  return new Promise(function(resolve) {
+    // Timeout fallback — if monday doesn't respond in 2s, give up
+    var timer = setTimeout(function() { resolve(''); }, 2000);
+
+    var handler = function(event) {
+      try {
+        var data = event.data;
+        console.log('[monday message]', data);
+        // monday sends context in several possible shapes
+        if (data && typeof data === 'object') {
+          var id = data.itemId || data.pulseId ||
+                   (data.data && (data.data.itemId || data.data.pulseId)) ||
+                   (data.payload && (data.payload.itemId || data.payload.pulseId));
+          if (id) {
+            clearTimeout(timer);
+            window.removeEventListener('message', handler);
+            resolve(String(id));
+          }
+        }
+      } catch(e) {}
+    };
+    window.addEventListener('message', handler);
+
+    // Ask monday for context (various API shapes used over the years)
+    try { window.parent.postMessage({ type: 'getContext' }, '*'); } catch(e) {}
+    try { window.parent.postMessage({ method: 'get', type: 'context' }, '*'); } catch(e) {}
+  });
 }
 
 function fetchSingleItem(itemId) {
@@ -600,33 +623,40 @@ function boot() {
   if (!CONFIG.boardId || CONFIG.boardId === 'YOUR_BOARD_ID_HERE')
     return showError('Board ID not set', 'Paste your monday.com board ID into the CONFIG block at the top.');
 
-  var itemId = getItemIdFromUrl();
-  if (!itemId) {
-    return showError('No item selected',
-      'This view expects to be embedded inside a monday.com item. ' +
-      'When setting up the iframe embed, include "?itemId={pulse.id}" in the URL. ' +
-      'For testing, append "?itemId=YOUR_ITEM_ID" to the URL.');
-  }
+  setMsg('Loading...');
 
-  setMsg('Loading columns...');
-  fetchColumns()
-    .then(function(cols) {
-      allBoardCols = cols;
-      colMap = mapCols(cols);
-      console.log('[colMap]', colMap);
-      setMsg('Loading job...');
-      return fetchSingleItem(itemId);
-    })
-    .then(function(item) {
-      if (!item) return showError('Item not found', 'Could not find item ' + itemId + ' on this board.');
-      $('loading').style.display = 'none';
-      $('app').style.display = 'flex';
-      selectItem(item);
-    })
-    .catch(function(e) {
-      console.error(e);
-      showError('Failed to load', e.message || String(e));
-    });
+  // Try URL first, then monday context
+  var urlId = getItemIdFromUrl();
+  var itemIdPromise = urlId ? Promise.resolve(urlId) : getItemIdFromMonday();
+
+  itemIdPromise.then(function(itemId) {
+    if (!itemId) {
+      return showError('No item selected',
+        'This view must be embedded inside a monday.com item. ' +
+        'For testing, append "?itemId=YOUR_ITEM_ID" to the URL.');
+    }
+
+    console.log('[itemId]', itemId);
+    setMsg('Loading columns...');
+    fetchColumns()
+      .then(function(cols) {
+        allBoardCols = cols;
+        colMap = mapCols(cols);
+        console.log('[colMap]', colMap);
+        setMsg('Loading job...');
+        return fetchSingleItem(itemId);
+      })
+      .then(function(item) {
+        if (!item) return showError('Item not found', 'Could not find item ' + itemId + ' on this board.');
+        $('loading').style.display = 'none';
+        $('app').style.display = 'flex';
+        selectItem(item);
+      })
+      .catch(function(e) {
+        console.error(e);
+        showError('Failed to load', e.message || String(e));
+      });
+  });
 }
 
 window.onerror = function(msg, src, line) {
