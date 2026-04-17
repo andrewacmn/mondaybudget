@@ -125,12 +125,6 @@ var CONFIG = {
 </div>
 
 <div class="container" id="app">
-  <!-- Item picker -->
-  <div class="header">
-    <div class="header-label">Job</div>
-    <select class="item-picker" id="item-picker"></select>
-  </div>
-
   <!-- Dynamic content injected here -->
   <div id="detail"></div>
 </div>
@@ -312,22 +306,20 @@ function getTimeTrackedHours(colId) {
 }
 
 // ── Render ─────────────────────────────────────────────────
-function renderPicker() {
-  var p = $('item-picker');
-  p.innerHTML = '';
-  allItems.forEach(function(it) {
-    var opt = new Option(it.name, it.id);
-    p.appendChild(opt);
-  });
-  if (selectedItem) p.value = selectedItem.id;
-  p.onchange = function() {
-    var raw = allItems.find(function(i){ return i.id === p.value; });
-    if (raw) selectItem(raw);
-  };
+// ── Get item ID from URL (monday passes ?itemId=X when embedded in item view) ──
+function getItemIdFromUrl() {
+  var params = new URLSearchParams(window.location.search);
+  // monday uses various param names depending on embed type
+  return params.get('itemId') || params.get('item_id') || params.get('pulseId') || params.get('pulse_id') || '';
+}
+
+function fetchSingleItem(itemId) {
+  return api('{ items(ids:[' + itemId + ']) { id name column_values { id value text } } }')
+    .then(function(d) { return (d && d.items && d.items[0]) || null; });
 }
 
 function selectItem(raw) {
-  selectedItem = raw; // store raw for _cv access
+  selectedItem = raw;
   var item = parseItem(raw);
   renderDetail(item);
 }
@@ -571,10 +563,8 @@ function saveField(itemId, colKey, value) {
     updateCol(itemId, colId, value)
       .then(function() {
         toast('Saved');
-        // Update local state so UI stays in sync without full refetch
-        return fetchItems().then(function(items) {
-          allItems = items;
-          var upd = items.find(function(i){ return i.id === itemId; });
+        // Refetch just this item to keep UI in sync
+        return fetchSingleItem(itemId).then(function(upd) {
           if (upd) { selectedItem = upd; renderDetail(parseItem(upd)); }
         });
       })
@@ -598,23 +588,28 @@ function boot() {
   if (!CONFIG.boardId || CONFIG.boardId === 'YOUR_BOARD_ID_HERE')
     return showError('Board ID not set', 'Paste your monday.com board ID into the CONFIG block at the top.');
 
+  var itemId = getItemIdFromUrl();
+  if (!itemId) {
+    return showError('No item selected',
+      'This view expects to be embedded inside a monday.com item. ' +
+      'When setting up the iframe embed, include "?itemId={pulse.id}" in the URL. ' +
+      'For testing, append "?itemId=YOUR_ITEM_ID" to the URL.');
+  }
+
   setMsg('Loading columns...');
   fetchColumns()
     .then(function(cols) {
       allBoardCols = cols;
       colMap = mapCols(cols);
       console.log('[colMap]', colMap);
-      setMsg('Loading jobs...');
-      return fetchItems();
+      setMsg('Loading job...');
+      return fetchSingleItem(itemId);
     })
-    .then(function(items) {
-      allItems = items;
-      if (!items.length) return showError('No items', 'No jobs found on this board.');
-      selectedItem = items[0];
+    .then(function(item) {
+      if (!item) return showError('Item not found', 'Could not find item ' + itemId + ' on this board.');
       $('loading').style.display = 'none';
       $('app').style.display = 'flex';
-      renderPicker();
-      selectItem(items[0]);
+      selectItem(item);
     })
     .catch(function(e) {
       console.error(e);
