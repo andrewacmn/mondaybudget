@@ -309,8 +309,20 @@ function getTimeTrackedHours(colId) {
 // ── Get item ID from URL (monday passes ?itemId=X when embedded in item view) ──
 function getItemIdFromUrl() {
   var params = new URLSearchParams(window.location.search);
+  console.log('[URL params]', Array.from(params.entries()));
   // monday uses various param names depending on embed type
-  return params.get('itemId') || params.get('item_id') || params.get('pulseId') || params.get('pulse_id') || '';
+  var id = params.get('itemId') || params.get('item_id') || params.get('pulseId') || params.get('pulse_id') || '';
+  // If the URL contains an unresolved placeholder like {pulse.id}, ignore it
+  if (id && (id.indexOf('{') !== -1 || id.indexOf('}') !== -1)) {
+    console.warn('[URL params] placeholder not substituted:', id);
+    return '';
+  }
+  // Must be numeric
+  if (id && !/^\d+$/.test(id)) {
+    console.warn('[URL params] non-numeric id:', id);
+    return '';
+  }
+  return id;
 }
 
 function fetchSingleItem(itemId) {
